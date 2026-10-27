@@ -1,0 +1,301 @@
+package main
+
+import (
+	"bufio"
+	"fmt"
+	"math/rand"
+	"os"
+	"sort"
+	"strings"
+	"testing"
+	"unicode/utf8"
+)
+
+type parsedTransition struct {
+	write     rune
+	move      string
+	nextState string
+}
+
+type runResult struct {
+	tape          map[int]rune
+	state         string
+	head          int
+	steps         int
+	changedWrites int
+}
+
+func loadMachine(t *testing.T) map[transitionKey]parsedTransition {
+	t.Helper()
+	file, err := os.Open("machine.tsv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+
+	transitions := make(map[transitionKey]parsedTransition)
+	defined := make(map[string]bool)
+	targets := make(map[string]bool)
+	scanner := bufio.NewScanner(file)
+	lineNumber := 0
+	for scanner.Scan() {
+		lineNumber++
+		fields := strings.Split(scanner.Text(), "\t")
+		if len(fields) != 5 {
+			t.Fatalf("line %d: expected 5 tab-separated fields, got %d", lineNumber, len(fields))
+		}
+		state, readText, move, writeText, nextState := fields[0], fields[1], fields[2], fields[3], fields[4]
+		if state == "" || nextState == "" {
+			t.Fatalf("line %d: state names cannot be empty", lineNumber)
+		}
+		if utf8.RuneCountInString(readText) != 1 || utf8.RuneCountInString(writeText) != 1 {
+			t.Fatalf("line %d: read/write symbols must each occupy one cell", lineNumber)
+		}
+		if move != "→" && move != "←" && move != stop {
+			t.Fatalf("line %d: illegal move %q", lineNumber, move)
+		}
+		if state == acceptState {
+			t.Fatalf("line %d: accepting state has an outgoing transition", lineNumber)
+		}
+		if (move == stop) != (nextState == acceptState) {
+			t.Fatalf("line %d: exactly transitions into %s must halt", lineNumber, acceptState)
+		}
+		read := []rune(readText)[0]
+		write := []rune(writeText)[0]
+		key := transitionKey{state: state, read: read}
+		if _, exists := transitions[key]; exists {
+			t.Fatalf("line %d: duplicate transition for state %q and symbol %q", lineNumber, state, read)
+		}
+		transitions[key] = parsedTransition{write: write, move: move, nextState: nextState}
+		defined[state] = true
+		targets[nextState] = true
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if lineNumber == 0 {
+		t.Fatal("machine.tsv is empty")
+	}
+	if !defined[initialState] {
+		t.Fatalf("initial state %q is not defined", initialState)
+	}
+	if !targets[acceptState] {
+		t.Fatalf("accepting state %q is never entered", acceptState)
+	}
+	for target := range targets {
+		if target != acceptState && !defined[target] {
+			t.Fatalf("transition targets undefined state %q", target)
+		}
+	}
+	return transitions
+}
+
+func encode(words []string) string {
+	return "[" + strings.Join(words, ",") + "]"
+}
+
+func inputWordCount(input string) int {
+	if input == "[]" {
+		return 0
+	}
+	return (utf8.RuneCountInString(input) - 1) / (wordLength + 1)
+}
+
+func runMachine(t *testing.T, transitions map[transitionKey]parsedTransition, input string) runResult {
+	t.Helper()
+	tape := make(map[int]rune)
+	for index, symbol := range []rune(input) {
+		tape[index] = symbol
+	}
+
+	words := inputWordCount(input)
+	limit := 2_000 * (words + 1) * (words + 1)
+	if limit < 10_000 {
+		limit = 10_000
+	}
+
+	result := runResult{tape: tape, state: initialState}
+	for result.state != acceptState {
+		symbol, exists := result.tape[result.head]
+		if !exists {
+			symbol = blank
+		}
+		transition, exists := transitions[transitionKey{state: result.state, read: symbol}]
+		if !exists {
+			t.Fatalf("stuck after %d steps in state %q on %q at cell %d", result.steps, result.state, symbol, result.head)
+		}
+		if transition.write != symbol {
+			result.changedWrites++
+		}
+		result.tape[result.head] = transition.write
+		result.state = transition.nextState
+		switch transition.move {
+		case "→":
+			result.head++
+		case "←":
+			result.head--
+		case stop:
+		default:
+			t.Fatalf("unexpected move %q", transition.move)
+		}
+		result.steps++
+		if result.steps > limit {
+			t.Fatalf("step limit %d exceeded for %s", limit, input)
+		}
+	}
+	return result
+}
+
+func assertSorts(t *testing.T, transitions map[transitionKey]parsedTransition, words []string) {
+	t.Helper()
+	supplied := append([]string(nil), words...)
+	expectedWords := append([]string(nil), supplied...)
+	sort.Strings(expectedWords)
+	expected := []rune(encode(expectedWords))
+	result := runMachine(t, transitions, encode(supplied))
+
+	if result.state != acceptState {
+		t.Fatalf("input %v: final state %q, want %q", supplied, result.state, acceptState)
+	}
+	if result.head != 0 {
+		t.Fatalf("input %v: final head %d, want 0", supplied, result.head)
+	}
+
+	nonblank := 0
+	for index, symbol := range result.tape {
+		if symbol == blank {
+			continue
+		}
+		nonblank++
+		if index < 0 || index >= len(expected) {
+			t.Fatalf("input %v: unexpected nonblank %q at cell %d", supplied, symbol, index)
+		}
+		if symbol != expected[index] {
+			t.Fatalf("input %v: cell %d is %q, want %q", supplied, index, symbol, expected[index])
+		}
+		if !strings.ContainsRune("[],"+hexDigits, symbol) {
+			t.Fatalf("input %v: scratch symbol %q remains at cell %d", supplied, symbol, index)
+		}
+	}
+	if nonblank != len(expected) {
+		t.Fatalf("input %v: found %d nonblank cells, want %d", supplied, nonblank, len(expected))
+	}
+	for index, symbol := range expected {
+		if result.tape[index] != symbol {
+			t.Fatalf("input %v: missing expected %q at cell %d", supplied, symbol, index)
+		}
+	}
+
+	n := len(supplied)
+	writeBound := 104 * n * (n - 1)
+	if result.changedWrites > writeBound {
+		t.Fatalf("input %v: %d changed writes exceeds bound %d", supplied, result.changedWrites, writeBound)
+	}
+}
+
+func TestGeneratedMachineCurrent(t *testing.T) {
+	if err := buildMachine().checkFile("machine.tsv"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCompactTableSize(t *testing.T) {
+	transitions := loadMachine(t)
+	states := map[string]bool{acceptState: true}
+	for key, transition := range transitions {
+		states[key.state] = true
+		states[transition.nextState] = true
+	}
+	if len(transitions) != 3_498 {
+		t.Fatalf("got %d transitions, want 3498", len(transitions))
+	}
+	if len(states) != 159 {
+		t.Fatalf("got %d states, want 159", len(states))
+	}
+}
+
+func TestEveryStateReachable(t *testing.T) {
+	transitions := loadMachine(t)
+	graph := make(map[string]map[string]bool)
+	allStates := map[string]bool{acceptState: true}
+	for key, transition := range transitions {
+		if graph[key.state] == nil {
+			graph[key.state] = make(map[string]bool)
+		}
+		graph[key.state][transition.nextState] = true
+		allStates[key.state] = true
+		allStates[transition.nextState] = true
+	}
+	reachable := map[string]bool{initialState: true}
+	work := []string{initialState}
+	for len(work) > 0 {
+		state := work[len(work)-1]
+		work = work[:len(work)-1]
+		for nextState := range graph[state] {
+			if !reachable[nextState] {
+				reachable[nextState] = true
+				work = append(work, nextState)
+			}
+		}
+	}
+	if len(reachable) != len(allStates) {
+		t.Fatalf("%d of %d states are graph-reachable", len(reachable), len(allStates))
+	}
+}
+
+func TestScratchAlphabetDisjoint(t *testing.T) {
+	groups := []string{hexDigits, markerDigits, string(hole), "[]," + string(blank)}
+	for i, group := range groups {
+		seen := make(map[rune]bool)
+		for _, symbol := range group {
+			if seen[symbol] {
+				t.Fatalf("duplicate symbol %q within alphabet group", symbol)
+			}
+			seen[symbol] = true
+		}
+		for _, other := range groups[i+1:] {
+			for _, symbol := range other {
+				if seen[symbol] {
+					t.Fatalf("alphabet groups overlap on %q", symbol)
+				}
+			}
+		}
+	}
+}
+
+func TestRequiredEdgeCases(t *testing.T) {
+	transitions := loadMachine(t)
+	zero := strings.Repeat("0", wordLength)
+	maximum := strings.Repeat("F", wordLength)
+	cases := [][]string{
+		{},
+		{zero},
+		{zero, maximum},
+		{maximum, zero},
+		{"1234567890ABCDEF", "1234567890ABCDEF"},
+		{maximum, maximum, maximum},
+		{maximum, "E000000000000000", "A000000000000000", zero},
+		{"F000000000000000", "0000000000000001"},
+		{"0000000000000001", zero},
+		{"AAAAAAAAAAAAAAAB", "AAAAAAAAAAAAAAAA"},
+		{"0000000000000002", "0000000000000001", zero},
+	}
+	for _, words := range cases {
+		assertSorts(t, transitions, words)
+	}
+}
+
+func TestEveryDigitOrderAtEveryPosition(t *testing.T) {
+	transitions := loadMachine(t)
+	for position := 0; position < wordLength; position++ {
+		for _, leftDigit := range hexRunes {
+			for _, rightDigit := range hexRunes {
+				left := []rune(strings.Repeat("0", wordLength))
+				right := []rune(strings.Repeat("0", wordLength))
+				left[position] = leftDigit
+				right[position] = rightDigit
+				assertSorts(t, transitions, []string{string(left), string(right)})
+			}
+		}
+	}
+}

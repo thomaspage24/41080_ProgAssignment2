@@ -103,6 +103,21 @@ func inputWordCount(input string) int {
 
 func runMachine(t *testing.T, transitions map[transitionKey]parsedTransition, input string) runResult {
 	t.Helper()
+	result := runUntilHalt(t, transitions, input)
+	if result.state != acceptState {
+		symbol, exists := result.tape[result.head]
+		if !exists {
+			symbol = blank
+		}
+		t.Fatalf("stuck after %d steps in state %q on %q at cell %d", result.steps, result.state, symbol, result.head)
+	}
+	return result
+}
+
+// A missing transition halts without accepting. Exceeding the step limit is
+// still a failure, so invalid-input tests cannot pass merely by looping.
+func runUntilHalt(t *testing.T, transitions map[transitionKey]parsedTransition, input string) runResult {
+	t.Helper()
 	tape := make(map[int]rune)
 	for index, symbol := range []rune(input) {
 		tape[index] = symbol
@@ -122,7 +137,7 @@ func runMachine(t *testing.T, transitions map[transitionKey]parsedTransition, in
 		}
 		transition, exists := transitions[transitionKey{state: result.state, read: symbol}]
 		if !exists {
-			t.Fatalf("stuck after %d steps in state %q on %q at cell %d", result.steps, result.state, symbol, result.head)
+			return result
 		}
 		if transition.write != symbol {
 			result.changedWrites++
@@ -285,6 +300,45 @@ func TestRequiredEdgeCases(t *testing.T) {
 	}
 }
 
+func TestDisallowedInputSymbols(t *testing.T) {
+	transitions := loadMachine(t)
+	cases := []struct {
+		name   string
+		symbol rune
+	}{
+		{"lowercase_a", 'a'},
+		{"lowercase_f", 'f'},
+		{"nonhex_uppercase", 'G'},
+		{"nonhex_lowercase", 'z'},
+		{"internal_marker", 'p'},
+		{"space", ' '},
+		{"tab", '\t'},
+		{"newline", '\n'},
+		{"internal_hole", hole},
+		{"tape_blank", blank},
+		{"minus_sign", '-'},
+		{"unicode_letter", 'é'},
+	}
+	for _, tc := range cases {
+		for _, position := range []int{0, wordLength / 2, wordLength - 1} {
+			word := []rune("1234567890ABCDEF")
+			word[position] = tc.symbol
+			inputs := []string{
+				encode([]string{string(word)}),
+				encode([]string{string(word), "0000000000000000"}),
+				encode([]string{"0000000000000000", string(word)}),
+			}
+			for index, input := range inputs {
+				t.Run(fmt.Sprintf("%s_position_%d_input_%d", tc.name, position, index), func(t *testing.T) {
+					if result := runUntilHalt(t, transitions, input); result.state == acceptState {
+						t.Fatalf("accepted input containing disallowed symbol %q: %q", tc.symbol, input)
+					}
+				})
+			}
+		}
+	}
+}
+
 func TestEveryDigitOrderAtEveryPosition(t *testing.T) {
 	transitions := loadMachine(t)
 	for position := 0; position < wordLength; position++ {
@@ -423,6 +477,23 @@ func TestNumericBoundariesAndDuplicates(t *testing.T) {
 			words: []string{
 				"8000000000000000", "0000000000000000", "FFFFFFFFFFFFFFFF",
 				"8000000000000000", "FFFFFFFFFFFFFFFF", "0000000000000000",
+			},
+		},
+		{
+			// The first differing digit decides, even when the suffix suggests otherwise.
+			name:  "first_difference_keep",
+			words: []string{"AAAAAAAAAAAAAA1F", "AAAAAAAAAAAAAA20"},
+		},
+		{
+			name:  "first_difference_swap",
+			words: []string{"AAAAAAAAAAAAAA20", "AAAAAAAAAAAAAA1F"},
+		},
+		{
+			// An equal pair after a swap must preserve the flag for another pass.
+			name: "equality_after_swap",
+			words: []string{
+				"0000000000000002", "0000000000000002",
+				"0000000000000001", "0000000000000002",
 			},
 		},
 	}

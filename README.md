@@ -10,5 +10,5 @@ go run generator.go
 go run generator.go --check
 
 # Run tests
-go test ./...
+go test -v
 ```

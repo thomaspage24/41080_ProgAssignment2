@@ -21,8 +21,8 @@ type runResult struct {
 	tape          map[int]rune
 	state         string
 	head          int
-	steps         int
-	changedWrites int
+	steps         int64
+	changedWrites int64
 }
 
 func loadMachine(t *testing.T) map[transitionKey]parsedTransition {
@@ -109,7 +109,7 @@ func runMachine(t *testing.T, transitions map[transitionKey]parsedTransition, in
 	}
 
 	words := inputWordCount(input)
-	limit := 2_000 * (words + 1) * (words + 1)
+	limit := int64(2_000) * int64(words+1) * int64(words+1)
 	if limit < 10_000 {
 		limit = 10_000
 	}
@@ -187,7 +187,7 @@ func assertSorts(t *testing.T, transitions map[transitionKey]parsedTransition, w
 	}
 
 	n := len(supplied)
-	writeBound := 104 * n * (n - 1)
+	writeBound := int64(104) * int64(n) * int64(n-1)
 	if result.changedWrites > writeBound {
 		t.Fatalf("input %v: %d changed writes exceeds bound %d", supplied, result.changedWrites, writeBound)
 	}
@@ -395,7 +395,40 @@ func TestAlreadySortedIsCheap(t *testing.T) {
 	}
 	result := runMachine(t, transitions, encode(words))
 	assertSorts(t, transitions, words)
-	if limit := 64 * (len(words) - 1); result.changedWrites > limit {
+	if limit := int64(64) * int64(len(words)-1); result.changedWrites > limit {
 		t.Fatalf("sorted input used %d changed writes, want at most %d", result.changedWrites, limit)
+	}
+}
+
+// Fixed-width uppercase hex has the same lexical and unsigned numeric order.
+func TestNumericBoundariesAndDuplicates(t *testing.T) {
+	transitions := loadMachine(t)
+	cases := []struct {
+		name  string
+		words []string
+	}{
+		{
+			name: "unsigned_boundary",
+			words: []string{
+				"FFFFFFFFFFFFFFFF", "8000000000000000",
+				"0000000000000000", "7FFFFFFFFFFFFFFF",
+			},
+		},
+		{
+			name:  "carry_boundary",
+			words: []string{"0000000100000000", "00000000FFFFFFFF"},
+		},
+		{
+			name: "mixed_duplicates",
+			words: []string{
+				"8000000000000000", "0000000000000000", "FFFFFFFFFFFFFFFF",
+				"8000000000000000", "FFFFFFFFFFFFFFFF", "0000000000000000",
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assertSorts(t, transitions, tc.words)
+		})
 	}
 }

@@ -299,3 +299,103 @@ func TestEveryDigitOrderAtEveryPosition(t *testing.T) {
 		}
 	}
 }
+
+func randomWord(rng *rand.Rand, digits string) string {
+	word := make([]byte, wordLength)
+	for i := range word {
+		word[i] = digits[rng.Intn(len(digits))]
+	}
+	return string(word)
+}
+
+// Random lists of 0-12 words, checked against Go's own sort.
+func TestRandomLists(t *testing.T) {
+	transitions := loadMachine(t)
+	rng := rand.New(rand.NewSource(41080))
+	for trial := 0; trial < 150; trial++ {
+		n := rng.Intn(13)
+		words := make([]string, n)
+		for i := range words {
+			words[i] = randomWord(rng, hexDigits)
+		}
+		t.Run(fmt.Sprintf("trial_%d_n_%d", trial, n), func(t *testing.T) {
+			assertSorts(t, transitions, words)
+		})
+	}
+}
+
+// Random lists where words share long prefixes, so comparisons go deep.
+func TestRandomSharedPrefixes(t *testing.T) {
+	transitions := loadMachine(t)
+	rng := rand.New(rand.NewSource(2))
+	for trial := 0; trial < 60; trial++ {
+		prefix := randomWord(rng, hexDigits)[:rng.Intn(wordLength)]
+		n := rng.Intn(10)
+		words := make([]string, n)
+		for i := range words {
+			words[i] = prefix + randomWord(rng, "0F8")[len(prefix):]
+		}
+		t.Run(fmt.Sprintf("trial_%d_prefix_%d", trial, len(prefix)), func(t *testing.T) {
+			assertSorts(t, transitions, words)
+		})
+	}
+}
+
+// Many duplicates: only two distinct values in a longer list.
+func TestManyDuplicates(t *testing.T) {
+	transitions := loadMachine(t)
+	low := strings.Repeat("7", wordLength)
+	high := strings.Repeat("7", wordLength-1) + "8"
+	words := []string{high, low, high, high, low, low, high, low, high, low}
+	assertSorts(t, transitions, words)
+}
+
+// Longer lists: all 16 single-digit words in reverse, and 30 random words.
+func TestLongLists(t *testing.T) {
+	transitions := loadMachine(t)
+	var reversed []string
+	for i := len(hexRunes) - 1; i >= 0; i-- {
+		reversed = append(reversed, strings.Repeat(string(hexRunes[i]), wordLength))
+	}
+	assertSorts(t, transitions, reversed)
+
+	rng := rand.New(rand.NewSource(30))
+	words := make([]string, 30)
+	for i := range words {
+		words[i] = randomWord(rng, hexDigits)
+	}
+	assertSorts(t, transitions, words)
+}
+
+// Worst case for writes: reverse sorted, words differ only in the last digit,
+// so every comparison marks all sixteen positions before deciding.
+func TestWorstCaseWrites(t *testing.T) {
+	transitions := loadMachine(t)
+	for n := 2; n <= 16; n++ {
+		words := make([]string, n)
+		for i := range words {
+			words[i] = strings.Repeat("0", wordLength-1) + string(hexRunes[n-1-i])
+		}
+		t.Run(fmt.Sprintf("n_%d", n), func(t *testing.T) {
+			assertSorts(t, transitions, words)
+			result := runMachine(t, transitions, encode(words))
+			t.Logf("n=%d changed writes=%d", n, result.changedWrites)
+		})
+	}
+}
+
+// Already sorted input should finish after one pass with no swaps. Each
+// comparison only marks and unmarks digits (at most 64 writes), so the total is
+// linear in n rather than quadratic.
+func TestAlreadySortedIsCheap(t *testing.T) {
+	transitions := loadMachine(t)
+	words := make([]string, 10)
+	for i := range words {
+		words[i] = strings.Repeat("0", wordLength-1) + string(hexRunes[i])
+	}
+	result := runMachine(t, transitions, encode(words))
+	assertSorts(t, transitions, words)
+	if limit := 64 * (len(words) - 1); result.changedWrites > limit {
+		t.Fatalf("sorted input used %d changed writes, want at most %d", result.changedWrites, limit)
+	}
+}

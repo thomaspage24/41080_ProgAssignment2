@@ -221,11 +221,11 @@ func TestCompactTableSize(t *testing.T) {
 		states[key.state] = true
 		states[transition.nextState] = true
 	}
-	if len(transitions) != 3_498 {
-		t.Fatalf("got %d transitions, want 3498", len(transitions))
+	if len(transitions) != 3_534 {
+		t.Fatalf("got %d transitions, want 3534", len(transitions))
 	}
-	if len(states) != 159 {
-		t.Fatalf("got %d states, want 159", len(states))
+	if len(states) != 161 {
+		t.Fatalf("got %d states, want 161", len(states))
 	}
 }
 

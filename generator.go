@@ -188,7 +188,20 @@ func buildMachine() *builder {
 	// State suffix _0/_1 stores the pass flag. Marked prefixes identify the
 	// current digit position, so no position counters are needed in state names.
 	b := newBuilder()
-	b.add(initialState, '[', "R", '[', "CHECK_0")
+	b.add(initialState, '[', "R", '[', "VALIDATE")
+
+	// Validate the complete input alphabet before entering any state that
+	// interprets a-p as internal comparison markers. Without this pass, an
+	// invalid marker at the start of the second word can be mistaken for an
+	// already-compared digit and later rewritten as valid hexadecimal input.
+	for _, symbol := range []rune(hexDigits + ",") {
+		b.add("VALIDATE", symbol, "R", symbol, "VALIDATE")
+	}
+	b.add("VALIDATE", ']', "L", ']', "VALIDATE_BACK")
+	for _, symbol := range []rune(hexDigits + ",") {
+		b.add("VALIDATE_BACK", symbol, "L", symbol, "VALIDATE_BACK")
+	}
+	b.add("VALIDATE_BACK", '[', "R", '[', "CHECK_0")
 
 	// FIND ADJACENT PAIRS. CHECK scans the current word. BACK returns from its
 	// following comma to the word's first digit.
